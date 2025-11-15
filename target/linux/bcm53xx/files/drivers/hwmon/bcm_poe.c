@@ -381,6 +381,9 @@ static void remove_sysfs_dirs(void)
 	for (i = 0; i < poe.nports && poe.ports[i]; i++)
 		device_unregister(poe.ports[i]);
 
+	if (poe.pdev)
+		device_unregister(poe.pdev);
+
 	if (poe.class)
 		class_unregister(poe.class);
 }
@@ -497,6 +500,22 @@ static void remove_sysfs_links(struct kobject *dev_kobj)
 	sysfs_remove_link(dev_kobj, "device");
 }
 
+static void remove_device_files(void)
+{
+	int i, j;
+
+	for (i = 0; i < ARRAY_SIZE(dev_attrs); i++)
+		device_remove_file(poe.pdev, &(dev_attrs[i]));
+
+	for (i = 0; i < poe.nports; i++) {
+		if (poe.ports[i]) {
+			for (j = 0; j < ARRAY_SIZE(port_attrs); j++)
+				device_remove_file(poe.ports[i],
+						   &(port_attrs[j]));
+		}
+	}
+}
+
 static int get_device_params(void)
 {
 	poe.nports = -1;
@@ -584,14 +603,17 @@ static int bcm_poe_probe(struct i2c_client *cl)
 	}
 
 probe_failed:
-	if (ret < 0)
+	if (ret < 0) {
+		remove_device_files();
 		remove_sysfs_dirs();
+	}
 
 	return ret;
 }
 
 static void bcm_poe_remove(struct i2c_client *client)
 {
+	remove_device_files();
 	remove_sysfs_dirs();
 }
 
