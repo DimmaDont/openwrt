@@ -8,8 +8,8 @@ array.
 Signed-off-by: Dimma Don't <dimmadumb@protonmail.com>
 ---
 
---- a/drivers/hwmon/bcm_poe.c
-+++ b/drivers/hwmon/bcm_poe.c
+--- a/drivers/hwmon/bcm59111.c
++++ b/drivers/hwmon/bcm59111.c
 @@ -1,4 +1,5 @@
  #include <linux/device.h>
 +#include <linux/firmware.h>

@@ -11,8 +11,8 @@ across reboots.
 Signed-off-by: Matthew Hagan <mnhagan88@gmail.com>
 ---
 
---- a/drivers/hwmon/bcm_poe.c
-+++ b/drivers/hwmon/bcm_poe.c
+--- a/drivers/hwmon/bcm59111.c
++++ b/drivers/hwmon/bcm59111.c
 @@ -11,6 +11,7 @@
  #include <linux/sysfs.h>
  #include <linux/time.h>
@@ -161,7 +161,7 @@ Signed-off-by: Matthew Hagan <mnhagan88@gmail.com>
  obj-$(CONFIG_SENSORS_ASUS_ROG_RYUJIN)	+= asus_rog_ryujin.o
  obj-$(CONFIG_SENSORS_ATXP1)	+= atxp1.o
  obj-$(CONFIG_SENSORS_AXI_FAN_CONTROL) += axi-fan-control.o
-+obj-$(CONFIG_SENSORS_BCM59111)	+= bcm_poe.o
++obj-$(CONFIG_SENSORS_BCM59111)	+= bcm59111.o
  obj-$(CONFIG_SENSORS_BT1_PVT)	+= bt1-pvt.o
  obj-$(CONFIG_SENSORS_CHIPCAP2) += chipcap2.o
  obj-$(CONFIG_SENSORS_CORETEMP)	+= coretemp.o
@@ -179,7 +179,7 @@ Signed-off-by: Matthew Hagan <mnhagan88@gmail.com>
 +	  controller.
 +
 +	  This driver can also be built as a module. If so, the module
-+	  will be called bcm_poe.
++	  will be called bcm59111.
 +
  config SENSORS_BT1_PVT
  	tristate "Baikal-T1 Process, Voltage, Temperature sensor driver"
