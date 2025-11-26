@@ -105,6 +105,17 @@ char *detect_state[] = { "unknown",  "short", "cpd_high",
 	(OP_MODE_SET(opmod, POE_PORT3) | OP_MODE_SET(opmod, POE_PORT2) | \
 	 OP_MODE_SET(opmod, POE_PORT1) | OP_MODE_SET(opmod, POE_PORT0))
 
+#define OP_MODE_DEFAULT OP_MODE_AUTO
+
+static const u8 OP_MODES_SET_ALL[] = {
+	OP_MODE_SET_ALL(OP_MODE_SHUTDOWN),
+	OP_MODE_SET_ALL(OP_MODE_MANUAL),
+	OP_MODE_SET_ALL(OP_MODE_SEMI),
+	OP_MODE_SET_ALL(OP_MODE_AUTO),
+};
+
+static u8 op_mode = OP_MODE_DEFAULT;
+
 #define POE_DISC_SENSE_REG 0x13 //RW
 #define DISC_DC_BASE 0x0
 #define DISC_AC_BASE 0x4
@@ -436,8 +447,9 @@ static int bcm_fw_init(struct device *dev)
 	bcm_write(POE_DISC_SENSE_REG, DISC_ENABLE_DC(POE_ALL_PORTS));
 	//Classify/detect on ports 0/1/2/3 (only used are 0/1)
 	bcm_write(POE_DET_CLASS_REG, DET_CLASS_ENABLE(POE_ALL_PORTS));
-	//Enable
-	bcm_write(POE_OP_MODE_REG, OP_MODE_SET_ALL(OP_MODE_AUTO));
+
+	if (op_mode == OP_MODE_DEFAULT)
+		bcm_write(POE_OP_MODE_REG, OP_MODE_SET_ALL(OP_MODE_DEFAULT));
 
 init_fail:
 	release_firmware(bcm_poe_fw);
@@ -617,6 +629,25 @@ static void bcm_poe_remove(struct i2c_client *client)
 	remove_sysfs_dirs();
 }
 
+static int param_set_mode(const char *val, const struct kernel_param *kp)
+{
+	int ret =
+		param_set_uint_minmax(val, kp, OP_MODE_SHUTDOWN, OP_MODE_AUTO);
+	if (ret == 0)
+		bcm_write(POE_OP_MODE_REG,
+			  OP_MODES_SET_ALL[*((unsigned int *)kp->arg)]);
+	return ret;
+}
+
+static const struct kernel_param_ops param_mode = {
+	.set = param_set_mode,
+	.get = param_get_int,
+};
+
+module_param_cb(mode, &param_mode, &op_mode, 0644);
+MODULE_PARM_DESC(
+	mode, "Operation mode (0: Shutdown; 1: Manual; 2: Semi; 3: Auto)[3]");
+
 static struct i2c_device_id bcm_poe_idtable[] = {
 	{ "bcm59111", 0 },
 	{ }
@@ -658,3 +689,4 @@ MODULE_AUTHOR("Timothy Passaro");
 MODULE_DESCRIPTION("Driver for BCM59111");
 MODULE_LICENSE("GPL");
 MODULE_FIRMWARE(FIRMWARE_59111_1);
+MODULE_VERSION("1.1.0");
