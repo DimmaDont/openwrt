@@ -11,6 +11,7 @@
 #include <linux/sysfs.h>
 #include <linux/time.h>
 #include <linux/uaccess.h>
+#include <linux/of_device.h>
 
 /* Misc */
 #define POE_PORT_REG(base, port, offset) (base + (port * offset))
@@ -198,8 +199,8 @@ char *detect_state[] = { "unknown",  "short", "cpd_high",
 #define POE_FW_CRC_FAIL 0xFF
 
 #define POE_ATTR_RO(_name, _func) __ATTR(_name, 0444, _func, NULL)
-#define POE_ATTR_WO(_name, _func) __ATTR(_name, 0222, NULL, _func)
-#define POE_ATTR_RW(_name, _show, _store) __ATTR(_name, 0666, _show, _store)
+#define POE_ATTR_WO(_name, _func) __ATTR(_name, 0220, NULL, _func)
+#define POE_ATTR_RW(_name, _show, _store) __ATTR(_name, 0664, _show, _store)
 
 #define POE_ATTR_RO_AUTO(_name) POE_ATTR_RO(_name, _name##_show)
 #define POE_ATTR_WO_AUTO(_name) POE_ATTR_WO(_name, _name##_store)
@@ -244,7 +245,6 @@ struct bcm_poe_dev {
 	struct device *ports[POE_MAX_PORT];
 	uint32_t last_joule_time[POE_MAX_PORT];
 	const struct i2c_client *client;
-	const struct i2c_device_id *id;
 	struct class *class;
 	struct device *pdev;
 	struct device *port_pdev;
@@ -273,7 +273,7 @@ enum fail {
 	ENOPOWER,
 };
 
-__devinitdata u8 poe_fw[] = {
+u8 poe_fw[] = {
 	0xFF, 0x3D, 0x1D, 0xFF, 0x3F, 0x4A, 0xFF, 0x49, 0x21, 0xFF, 0x4E, 0xFD,
 	0xFF, 0x42, 0x2E, 0xFF, 0x2F, 0x0B, 0xFF, 0x42, 0xA6, 0xFF, 0x43, 0x1E,
 	0xFF, 0x50, 0x10, 0xFF, 0x52, 0x6E, 0xFF, 0x52, 0x6F, 0xFF, 0x52, 0x70,
@@ -1749,15 +1749,12 @@ static void remove_sysfs_dirs(void)
 		class_unregister(poe.class);
 }
 
-static int __devinit bcm_fw_init(void)
+static int bcm_fw_init(void)
 {
 	int fail = 0;
 	u32 i, j;
 	u8 block[I2C_BLOCK_SIZE];
-	struct timespec start;
-
-	//Disable port to force client to renegotiate
-	bcm_write(POE_OP_MODE_REG, OP_MODE_SET_ALL(OP_MODE_SHUTDOWN));
+	unsigned long start;
 
 	fail = bcm_write(POE_FW_LOAD_CTL_REG, POE_FW_LOAD_START);
 
@@ -1778,10 +1775,9 @@ static int __devinit bcm_fw_init(void)
 	if (fail < 0)
 		goto init_fail;
 
-	start = CURRENT_TIME_SEC;
+	start = ktime_get_real_seconds();
 	while (bcm_read(POE_FW_CRC_REG) != POE_FW_CRC_GOOD &&
-	       timespec_sub(CURRENT_TIME_SEC, start).tv_sec <
-		       POE_FW_CRC_MAX_TIME) {
+	       ktime_get_real_seconds() - start < POE_FW_CRC_MAX_TIME) {
 	};
 
 	if (bcm_read(POE_FW_CRC_REG) != POE_FW_CRC_GOOD) {
@@ -1793,6 +1789,8 @@ static int __devinit bcm_fw_init(void)
 	bcm_write(POE_DISC_SENSE_REG, DISC_ENABLE_DC(POE_ALL_PORTS));
 	//Classify/detect on ports 0/1/2/3 (only used are 0/1)
 	bcm_write(POE_DET_CLASS_REG, DET_CLASS_ENABLE(POE_ALL_PORTS));
+	//Enable
+	bcm_write(POE_OP_MODE_REG, OP_MODE_SET_ALL(OP_MODE_AUTO));
 
 init_fail:
 	return fail;
@@ -1875,12 +1873,11 @@ static int get_device_params(void)
 	return 0;
 }
 
-static int bcm_poe_probe(struct i2c_client *cl, const struct i2c_device_id *id)
+static int bcm_poe_probe(struct i2c_client *cl)
 {
 	int i, j, ret = 0;
 
 	poe.client = cl;
-	poe.id = id;
 	poe.class = NULL;
 	poe.pdev = NULL;
 	poe.port_pdev = NULL;
@@ -1889,7 +1886,7 @@ static int bcm_poe_probe(struct i2c_client *cl, const struct i2c_device_id *id)
 		return ret;
 	} else if (bcm_fw_init()) {
 		return -EFW;
-	} else if (!(poe.class = class_create(THIS_MODULE, "poe")) ||
+	} else if (!(poe.class = class_create("poe")) ||
 		   !(poe.pdev =
 			     device_create(poe.class, NULL, 0, NULL, "poe0")) ||
 		   !(poe.port_pdev = device_create(poe.class, poe.pdev, 0, NULL,
@@ -1934,10 +1931,9 @@ probe_failed:
 	return ret;
 }
 
-static int __devexit bcm_poe_remove(struct i2c_client *client)
+static void bcm_poe_remove(struct i2c_client *client)
 {
 	remove_sysfs_dirs();
-	return 0;
 }
 
 static struct i2c_device_id bcm_poe_idtable[] = {
@@ -1945,15 +1941,21 @@ static struct i2c_device_id bcm_poe_idtable[] = {
 	{ }
 };
 
+static struct of_device_id bcm_poe_of_idtable[] = {
+	{ .compatible = "brcm,bcm59111" },
+	{ }
+};
+
 static struct i2c_driver bcm_poe_driver = {
 	.driver = {
 		.name   = "bcm59111",
+		.of_match_table = bcm_poe_of_idtable,
 		.owner  = THIS_MODULE,
 	},
 
 	.id_table   = bcm_poe_idtable,
 	.probe      = bcm_poe_probe,
-	.remove = __devexit_p(bcm_poe_remove),
+	.remove = bcm_poe_remove,
 };
 
 static int __init bcm_poe_init(void)
@@ -1969,6 +1971,7 @@ static void __exit bcm_poe_exit(void)
 module_init(bcm_poe_init);
 module_exit(bcm_poe_exit);
 MODULE_DEVICE_TABLE(i2c, bcm_poe_idtable);
+MODULE_DEVICE_TABLE(of, bcm_poe_of_idtable);
 
 MODULE_AUTHOR("Timothy Passaro");
 MODULE_DESCRIPTION("Driver for BCM59111");
