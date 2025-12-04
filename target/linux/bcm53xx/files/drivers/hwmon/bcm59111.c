@@ -1,3 +1,4 @@
+#include <linux/delay.h>
 #include <linux/device.h>
 #include <linux/firmware.h>
 #include <linux/fs.h>
@@ -436,6 +437,7 @@ static int bcm_fw_init(struct device *dev)
 	start = ktime_get_real_seconds();
 	while (bcm_read(POE_FW_CRC_REG) != POE_FW_CRC_GOOD &&
 	       ktime_get_real_seconds() - start < POE_FW_CRC_MAX_TIME) {
+		msleep(100);
 	};
 
 	if (bcm_read(POE_FW_CRC_REG) != POE_FW_CRC_GOOD) {
