@@ -376,6 +376,8 @@ static s64 calculate_port_power_usage(const struct i2c_client *client,
 	else
 		ret = POE_POWER(volt, amp);
 
+	pr_info("volt %u amp %u power %llu\n", volt, amp, ret);
+
 	return ret;
 }
 
@@ -451,6 +453,8 @@ static int bcm_fw_init(struct device *dev)
 	int fail = 0;
 	u32 i;
 	u8 j;
+	u32 k = 0;
+	s32 r;
 	u8 block[I2C_BLOCK_SIZE];
 	time64_t start;
 	struct bcm_poe_dev *poe = dev_get_drvdata(dev);
@@ -458,7 +462,13 @@ static int bcm_fw_init(struct device *dev)
 	if (BCM_READ(poe->client, POE_FW_CRC_REG) == POE_FW_CRC_GOOD)
 		goto fw_loaded;
 
+	dev_info(dev, "firmware load pre: %#x\n",
+		 BCM_READ(poe->client, POE_FW_CRC_REG));
+
 	fail = BCM_WRITE(poe->client, POE_FW_LOAD_CTL_REG, POE_FW_LOAD_START);
+
+	dev_info(dev, "firmware load init: %#x\n",
+		 BCM_READ(poe->client, POE_FW_CRC_REG));
 
 	if (fail < 0)
 		goto init_fail;
@@ -467,6 +477,9 @@ static int bcm_fw_init(struct device *dev)
 
 	if (fail != 0)
 		goto init_fail;
+
+	dev_info(dev, "firmware write start: %#x\n",
+		 BCM_READ(poe->client, POE_FW_CRC_REG));
 
 	for (i = 0; i < bcm_poe_fw->size && fail >= 0; i += FW_BLOCK_SIZE) {
 		block[0] = ((i & 0xff00) >> 8);
@@ -481,23 +494,35 @@ static int bcm_fw_init(struct device *dev)
 	if (fail < 0)
 		goto init_fail;
 
+	dev_info(dev, "firmware write done: %#x\n",
+		 BCM_READ(poe->client, POE_FW_CRC_REG));
+
 	fail = BCM_WRITE(poe->client, POE_FW_LOAD_CTL_REG, POE_FW_LOAD_STOP);
+
+	dev_info(dev, "firmware write stop: %#x\n",
+		 BCM_READ(poe->client, POE_FW_CRC_REG));
 
 	if (fail < 0)
 		goto init_fail;
 
 	start = ktime_get_real_seconds();
-	while (BCM_READ(poe->client, POE_FW_CRC_REG) != POE_FW_CRC_GOOD &&
+	while ((r = BCM_READ(poe->client, POE_FW_CRC_REG)) != POE_FW_CRC_GOOD &&
 	       ktime_get_real_seconds() - start < POE_FW_CRC_MAX_TIME) {
+		k++;
+		//dev_info(dev, "check fw crc: %d\n", r);
 		msleep(100);
 	};
+	dev_info(dev, "firmware write crc done: %u\n", k);
 
-	if (BCM_READ(poe->client, POE_FW_CRC_REG) != POE_FW_CRC_GOOD) {
+	if ((r = BCM_READ(poe->client, POE_FW_CRC_REG)) != POE_FW_CRC_GOOD) {
 		fail = -ECRC;
+		dev_info(dev, "firmware write crc bad: %#x\n", r);
 		goto init_fail;
 	}
+	dev_info(dev, "firmware write crc ok: %#x\n", r);
 
 fw_loaded:
+	dev_info(dev, "fw_loaded\n");
 	//Enable disconnect sensing
 	BCM_WRITE(poe->client, POE_DISC_SENSE_REG,
 		  DISC_ENABLE_DC(POE_ALL_PORTS));
@@ -505,9 +530,11 @@ fw_loaded:
 	BCM_WRITE(poe->client, POE_DET_CLASS_REG,
 		  DET_CLASS_ENABLE(POE_ALL_PORTS));
 	//Set operation mode
+	dev_info(dev, "setting op mode to %u\n", op_mode);
 	BCM_WRITE(poe->client, POE_OP_MODE_REG, OP_MODES_SET_ALL[op_mode]);
 
 init_fail:
+	dev_info(dev, "init_fail %#x\n", BCM_READ(poe->client, POE_FW_CRC_REG));
 	release_firmware(bcm_poe_fw);
 	return fail;
 }
@@ -607,11 +634,17 @@ static int get_device_params(struct device *dev)
 		return -ENOPOWER;
 #undef PARG
 
+	dev_info(dev, "nports: %u\n", poe->nports);
+	dev_info(dev, "port_base: %u\n", poe->port_base);
+	dev_info(dev, "max_power_mw: %u\n", poe->max_power_mw);
+
 	return 0;
 }
 
 static int bcm_poe_probe(struct i2c_client *client)
 {
+	pr_info("bcm_poe_probe\n");
+
 	struct class *class;
 	struct device *dev;
 	struct bcm_poe_dev *poe;
@@ -646,14 +679,20 @@ static int bcm_poe_probe(struct i2c_client *client)
 	dev_set_drvdata(dev, poe);
 	i2c_set_clientdata(client, poe);
 
+	dev_info(poe->pdev, "get_device_params\n");
+
 	ret = get_device_params(poe->pdev);
 	if (ret)
 		goto probe_failed;
+
+	dev_info(poe->pdev, "bcm_fw_init\n");
 
 	if (bcm_fw_init(poe->pdev)) {
 		ret = -EFW;
 		goto probe_failed;
 	}
+
+	dev_info(poe->pdev, "device create\n");
 
 	poe->port_pdev =
 		device_create(poe->class, poe->pdev, 0, NULL, "sys_ports");
@@ -701,6 +740,8 @@ probe_failed:
 		remove_sysfs_dirs(poe->pdev);
 	}
 
+	dev_info(poe->pdev, "probed\n");
+
 	return ret;
 }
 
@@ -716,8 +757,10 @@ static int param_set_mode(const char *val, const struct kernel_param *kp)
 {
 	int ret =
 		param_set_uint_minmax(val, kp, OP_MODE_SHUTDOWN, OP_MODE_AUTO);
-	if (ret == 0)
+	if (ret == 0) {
 		op_mode = OP_MODES_SET_ALL[*((unsigned int *)kp->arg)];
+		pr_info("p set op mode to %d\n", *((unsigned int *)kp->arg));
+	}
 	return ret;
 }
 
