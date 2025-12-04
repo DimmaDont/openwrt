@@ -407,6 +407,9 @@ static int bcm_fw_init(struct device *dev)
 	u8 block[I2C_BLOCK_SIZE];
 	unsigned long start;
 
+	if (bcm_read(POE_FW_CRC_REG) == POE_FW_CRC_GOOD)
+		goto fw_loaded;
+
 	fail = bcm_write(POE_FW_LOAD_CTL_REG, POE_FW_LOAD_START);
 
 	if (fail < 0)
@@ -445,6 +448,7 @@ static int bcm_fw_init(struct device *dev)
 		goto init_fail;
 	}
 
+fw_loaded:
 	//Enable disconnect sensing
 	bcm_write(POE_DISC_SENSE_REG, DISC_ENABLE_DC(POE_ALL_PORTS));
 	//Classify/detect on ports 0/1/2/3 (only used are 0/1)
