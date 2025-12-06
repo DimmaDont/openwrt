@@ -221,11 +221,12 @@ static u8 op_mode = OP_MODE_DEFAULT;
 #define POE_ATTR_WO_AUTO(_name) POE_ATTR_WO(_name, _name##_store)
 #define POE_ATTR_RW_AUTO(_name) POE_ATTR_RW(_name, _name##_show, _name##_store)
 
-#define POE_ATTR_RO_FUNC(_name, _reg, _bits, _bitoff, _pstr, _type)            \
+#define POE_ATTR_RO_FUNC(_name, _reg, _bits, _bitoff, _pstr, _type, _dev)      \
 	static ssize_t _name##_show(struct _type *dev,                         \
 				    struct _type##_attribute *attr, char *buf) \
 	{                                                                      \
-		s32 rd = (_reg >= 0 ? BCM_READ(poe.client, _reg) : -1);        \
+		struct bcm_poe_dev *poe = dev_get_drvdata(_dev);               \
+		s32 rd = (_reg >= 0 ? BCM_READ(poe->client, _reg) : -1);       \
 		int idx = ((rd >> _bitoff) & _bits);                           \
 		return _pstr;                                                  \
 	}
@@ -241,20 +242,35 @@ static u8 op_mode = OP_MODE_DEFAULT;
 
 #define DEV_RD(_name, _reg, _regoff, _bits, _bitoff)                     \
 	POE_ATTR_RO_FUNC(_name, (_reg + (dev->devt * _regoff)), (_bits), \
-			 (_bitoff), POE_PRINT_BITS, device)
+			 (_bitoff), POE_PRINT_BITS, device, dev)
 #define DEV_SHARED_RD(_name, _reg, _regoff, _bits, _bitoff)              \
 	POE_ATTR_RO_FUNC(_name, (_reg + (dev->devt * _regoff)), (_bits), \
-			 (_bitoff + (dev->devt)), POE_PRINT_BITS, device)
+			 (_bitoff + (dev->devt)), POE_PRINT_BITS, device, dev)
 #define DEV_MATCH(_name, _reg, _regoff, _bits, _bitoff, _mval)           \
 	POE_ATTR_RO_FUNC(_name, (_reg + (dev->devt * _regoff)), (_bits), \
-			 (_bitoff), POE_PRINT_MATCH(_mval), device)
+			 (_bitoff), POE_PRINT_MATCH(_mval), device, dev)
 #define DEV_SHARED_MATCH(_name, _reg, _regoff, _bits, _bitoff, _mval)     \
 	POE_ATTR_RO_FUNC(_name, (_reg + (dev->devt * _regoff)), (_bits),  \
 			 (_bitoff + (dev->devt)), POE_PRINT_MATCH(_mval), \
-			 device)
+			 device, dev)
 #define DEV_STR_RD(_name, _reg, _regoff, _bits, _bitoff)                 \
 	POE_ATTR_RO_FUNC(_name, (_reg + (dev->devt * _regoff)), (_bits), \
-			 (_bitoff), POE_PRINT_STR(_name), device)
+			 (_bitoff), POE_PRINT_STR(_name), device, dev)
+
+#define DEV_PORT_RD(_name, _reg, _regoff, _bits, _bitoff)                \
+	POE_ATTR_RO_FUNC(_name, (_reg + (dev->devt * _regoff)), (_bits), \
+			 (_bitoff), POE_PRINT_BITS, device, dev->parent)
+#define DEV_PORT_SHARED_RD(_name, _reg, _regoff, _bits, _bitoff)          \
+	POE_ATTR_RO_FUNC(_name, (_reg + (dev->devt * _regoff)), (_bits),  \
+			 (_bitoff + (dev->devt)), POE_PRINT_BITS, device, \
+			 dev->parent)
+#define DEV_PORT_MATCH(_name, _reg, _regoff, _bits, _bitoff, _mval)      \
+	POE_ATTR_RO_FUNC(_name, (_reg + (dev->devt * _regoff)), (_bits), \
+			 (_bitoff), POE_PRINT_MATCH(_mval), device,      \
+			 dev->parent)
+#define DEV_PORT_STR_RD(_name, _reg, _regoff, _bits, _bitoff)            \
+	POE_ATTR_RO_FUNC(_name, (_reg + (dev->devt * _regoff)), (_bits), \
+			 (_bitoff), POE_PRINT_STR(_name), device, dev->parent)
 
 #define BCM_WRITE_BLOCK(cl, addr, len, val) \
 	i2c_smbus_write_block_data(cl, addr, len, val)
@@ -275,8 +291,6 @@ struct bcm_poe_dev {
 	uint32_t port_base;
 	uint32_t max_power_mw;
 };
-
-static struct bcm_poe_dev poe;
 
 enum fail {
 	EFW = 1,
@@ -300,12 +314,13 @@ static ssize_t reg_store(struct device *cl, struct device_attribute *cl_attr,
 			 const char *buf, size_t count)
 {
 	long val;
+	struct bcm_poe_dev *poe = dev_get_drvdata(cl);
 
 	if (!kstrtol(buf, 16, &val)) {
 		if (!strcmp(cl_attr->attr.name, "reg_arg"))
-			BCM_WRITE(poe.client, poe.reg_op, val);
+			BCM_WRITE(poe->client, poe->reg_op, val);
 		else if (!strcmp(cl_attr->attr.name, "reg"))
-			poe.reg_op = val;
+			poe->reg_op = val;
 	}
 
 	return count;
@@ -314,8 +329,10 @@ static ssize_t reg_store(struct device *cl, struct device_attribute *cl_attr,
 static ssize_t reg_show(struct device *dev, struct device_attribute *attr,
 			char *buf)
 {
+	struct bcm_poe_dev *poe = dev_get_drvdata(dev);
+
 	return scnprintf(buf, PAGE_SIZE, "Register 0x%lx Value 0x%x\n",
-			 poe.reg_op, BCM_READ(poe.client, poe.reg_op));
+			 poe->reg_op, BCM_READ(poe->client, poe->reg_op));
 }
 
 static ssize_t enabled_store(struct device *dev,
@@ -324,24 +341,25 @@ static ssize_t enabled_store(struct device *dev,
 {
 	long val;
 	s32 rd;
+	struct bcm_poe_dev *poe = dev_get_drvdata(dev->parent);
 
 	if (!kstrtol(buf, 16, &val)) {
-		rd = BCM_READ(poe.client, POE_OP_MODE_REG);
+		rd = BCM_READ(poe->client, POE_OP_MODE_REG);
 		rd = OP_MODE_CLR_SET(
 			rd, (val ? OP_MODE_AUTO : OP_MODE_SHUTDOWN), dev->devt);
-		BCM_WRITE(poe.client, POE_OP_MODE_REG, rd);
+		BCM_WRITE(poe->client, POE_OP_MODE_REG, rd);
 	}
 
 	return count;
 }
 
-static u64 calculate_port_power_usage(int port)
+static u64 calculate_port_power_usage(const struct i2c_client *client, int port)
 {
 	u32 volt, amp;
 	u64 ret;
 
-	volt = BCM_READ_WORD(poe.client, POE_PARAM_VOLT_REG(port));
-	amp = BCM_READ_WORD(poe.client, POE_PARAM_AMP_REG(port));
+	volt = BCM_READ_WORD(client, POE_PARAM_VOLT_REG(port));
+	amp = BCM_READ_WORD(client, POE_PARAM_AMP_REG(port));
 
 	if (volt < 0 || amp < 0)
 		ret = -EREAD;
@@ -354,36 +372,43 @@ static u64 calculate_port_power_usage(int port)
 static ssize_t millijoules_show(struct device *dev,
 				struct device_attribute *dev_attr, char *buf)
 {
-	s64 watts = calculate_port_power_usage(dev->devt);
-	uint32_t t = (jiffies - poe.last_joule_time[dev->devt]);
-	poe.last_joule_time[dev->devt] = jiffies;
+	struct bcm_poe_dev *poe = dev_get_drvdata(dev->parent);
+	s64 watts = calculate_port_power_usage(poe->client, dev->devt);
+	uint32_t t = (jiffies - poe->last_joule_time[dev->devt]);
+	poe->last_joule_time[dev->devt] = jiffies;
 	return scnprintf(buf, PAGE_SIZE, "%llu\n", watts * t);
 }
 
 static ssize_t power_show(struct device *dev, struct device_attribute *dev_attr,
 			  char *buf)
 {
+	struct bcm_poe_dev *poe = dev_get_drvdata(dev->parent);
+
 	return scnprintf(buf, PAGE_SIZE, "%llu\n",
-			 calculate_port_power_usage(dev->devt));
+			 calculate_port_power_usage(poe->client, dev->devt));
 }
 
 static ssize_t power_budget_show(struct device *dev,
 				 struct device_attribute *attr, char *buf)
 {
-	return scnprintf(buf, PAGE_SIZE, "%u\n", poe.max_power_mw);
+	struct bcm_poe_dev *poe = dev_get_drvdata(dev);
+
+	return scnprintf(buf, PAGE_SIZE, "%u\n", poe->max_power_mw);
 }
 
-static void remove_sysfs_dirs(void)
+static void remove_sysfs_dirs(struct device *dev)
 {
 	int i;
-	for (i = 0; i < poe.nports && poe.ports[i]; i++)
-		device_unregister(poe.ports[i]);
+	struct bcm_poe_dev *poe = dev_get_drvdata(dev);
 
-	if (poe.pdev)
-		device_unregister(poe.pdev);
+	for (i = 0; i < poe->nports && poe->ports[i]; i++)
+		device_unregister(poe->ports[i]);
 
-	if (poe.class)
-		class_unregister(poe.class);
+	if (poe->pdev)
+		device_unregister(poe->pdev);
+
+	if (poe->class)
+		class_unregister(poe->class);
 }
 
 static int bcm_fw_init(struct device *dev)
@@ -392,11 +417,12 @@ static int bcm_fw_init(struct device *dev)
 	u32 i, j;
 	u8 block[I2C_BLOCK_SIZE];
 	unsigned long start;
+	struct bcm_poe_dev *poe = dev_get_drvdata(dev);
 
-	if (BCM_READ(poe.client, POE_FW_CRC_REG) == POE_FW_CRC_GOOD)
+	if (BCM_READ(poe->client, POE_FW_CRC_REG) == POE_FW_CRC_GOOD)
 		goto fw_loaded;
 
-	fail = BCM_WRITE(poe.client, POE_FW_LOAD_CTL_REG, POE_FW_LOAD_START);
+	fail = BCM_WRITE(poe->client, POE_FW_LOAD_CTL_REG, POE_FW_LOAD_START);
 
 	if (fail < 0)
 		goto init_fail;
@@ -412,48 +438,46 @@ static int bcm_fw_init(struct device *dev)
 		for (j = 0; (j < FW_BLOCK_SIZE) && (i + j) < bcm_poe_fw->size;
 		     j++)
 			block[j + 2] = bcm_poe_fw->data[i + j];
-		fail = BCM_WRITE_BLOCK(poe.client, POE_FW_LOAD_CTL_REG, (j + 2),
-				       block);
+		fail = BCM_WRITE_BLOCK(poe->client, POE_FW_LOAD_CTL_REG,
+				       (j + 2), block);
 	}
 
 	if (fail < 0)
 		goto init_fail;
 
-	fail = BCM_WRITE(poe.client, POE_FW_LOAD_CTL_REG, POE_FW_LOAD_STOP);
+	fail = BCM_WRITE(poe->client, POE_FW_LOAD_CTL_REG, POE_FW_LOAD_STOP);
 
 	if (fail < 0)
 		goto init_fail;
 
 	start = ktime_get_real_seconds();
-	while (BCM_READ(poe.client, POE_FW_CRC_REG) != POE_FW_CRC_GOOD &&
+	while (BCM_READ(poe->client, POE_FW_CRC_REG) != POE_FW_CRC_GOOD &&
 	       ktime_get_real_seconds() - start < POE_FW_CRC_MAX_TIME) {
 		msleep(100);
 	};
 
-	if (BCM_READ(poe.client, POE_FW_CRC_REG) != POE_FW_CRC_GOOD) {
+	if (BCM_READ(poe->client, POE_FW_CRC_REG) != POE_FW_CRC_GOOD) {
 		fail = -ECRC;
 		goto init_fail;
 	}
 
 fw_loaded:
 	//Enable disconnect sensing
-	BCM_WRITE(poe.client, POE_DISC_SENSE_REG,
+	BCM_WRITE(poe->client, POE_DISC_SENSE_REG,
 		  DISC_ENABLE_DC(POE_ALL_PORTS));
 	//Classify/detect on ports 0/1/2/3 (only used are 0/1)
-	BCM_WRITE(poe.client, POE_DET_CLASS_REG,
+	BCM_WRITE(poe->client, POE_DET_CLASS_REG,
 		  DET_CLASS_ENABLE(POE_ALL_PORTS));
-
-	if (op_mode == OP_MODE_DEFAULT)
-		BCM_WRITE(poe.client, POE_OP_MODE_REG,
-			  OP_MODE_SET_ALL(OP_MODE_DEFAULT));
+	//Set operation mode
+	BCM_WRITE(poe->client, POE_OP_MODE_REG, OP_MODES_SET_ALL[op_mode]);
 
 init_fail:
 	release_firmware(bcm_poe_fw);
 	return fail;
 }
 
-DEV_RD(denied, POE_COUNT_POWER_DENIED_BASE_REG, POE_COUNT_OFFSET,
-       POE_COUNT_POWER_DENIED_BITS, POE_NO_OFFSET);
+DEV_PORT_RD(denied, POE_COUNT_POWER_DENIED_BASE_REG, POE_COUNT_OFFSET,
+	    POE_COUNT_POWER_DENIED_BITS, POE_NO_OFFSET);
 DEV_RD(uvlo_main, POE_SUPENV_REG, POE_NO_OFFSET, POE_SINGLE_BIT,
        POE_SUPENV_UVLO_MAIN_OFF);
 DEV_RD(uvlo_vcc, POE_SUPENV_REG, POE_NO_OFFSET, POE_SINGLE_BIT,
@@ -463,20 +487,21 @@ DEV_RD(failed_fet, POE_SUPENV_REG, POE_NO_OFFSET, POE_SINGLE_BIT,
 DEV_RD(failed_temp, POE_SUPENV_REG, POE_NO_OFFSET, POE_SINGLE_BIT,
        POE_SUPENV_TEMP_OFF);
 
-DEV_STR_RD(class, POE_STATP_BASE, POE_STATP_OFFSET, POE_STATP_CLASS_BITS,
-	   POE_STATP_CLASS_OFFSET);
-DEV_STR_RD(mode, POE_STATP_BASE, POE_STATP_OFFSET, POE_STATP_CLASS_BITS,
-	   POE_STATP_CLASS_OFFSET);
+DEV_PORT_STR_RD(class, POE_STATP_BASE, POE_STATP_OFFSET, POE_STATP_CLASS_BITS,
+		POE_STATP_CLASS_OFFSET);
+DEV_PORT_STR_RD(mode, POE_STATP_BASE, POE_STATP_OFFSET, POE_STATP_CLASS_BITS,
+		POE_STATP_CLASS_OFFSET);
 
-DEV_MATCH(overload, POE_STATP_BASE, POE_STATP_OFFSET, POE_STATP_DETECT_BITS,
-	  POE_STATP_DETECT_OFFSET, DETECT_RSIG_HIGH);
-DEV_MATCH(underload, POE_STATP_BASE, POE_STATP_OFFSET, POE_STATP_DETECT_BITS,
-	  POE_STATP_DETECT_OFFSET, DETECT_RSIG_LOW);
+DEV_PORT_MATCH(overload, POE_STATP_BASE, POE_STATP_OFFSET,
+	       POE_STATP_DETECT_BITS, POE_STATP_DETECT_OFFSET,
+	       DETECT_RSIG_HIGH);
+DEV_PORT_MATCH(underload, POE_STATP_BASE, POE_STATP_OFFSET,
+	       POE_STATP_DETECT_BITS, POE_STATP_DETECT_OFFSET, DETECT_RSIG_LOW);
 
-DEV_SHARED_RD(enabled, POE_STATPWR_REG, POE_NO_OFFSET, POE_SINGLE_BIT,
-	      POE_STATPWR_PORT_EN_OFF);
-DEV_SHARED_RD(status, POE_STATPWR_REG, POE_NO_OFFSET, POE_SINGLE_BIT,
-	      POE_STATPWR_PORT_EN_OFF);
+DEV_PORT_SHARED_RD(enabled, POE_STATPWR_REG, POE_NO_OFFSET, POE_SINGLE_BIT,
+		   POE_STATPWR_PORT_EN_OFF);
+DEV_PORT_SHARED_RD(status, POE_STATPWR_REG, POE_NO_OFFSET, POE_SINGLE_BIT,
+		   POE_STATPWR_PORT_EN_OFF);
 
 static struct device_attribute port_attrs[] = {
 	POE_ATTR_RO_AUTO(class),
@@ -508,37 +533,40 @@ static void remove_sysfs_links(struct kobject *dev_kobj)
 	sysfs_remove_link(dev_kobj, "device");
 }
 
-static void remove_device_files(void)
+static void remove_device_files(struct device *dev)
 {
 	int i, j;
+	struct bcm_poe_dev *poe = dev_get_drvdata(dev);
 
 	for (i = 0; i < ARRAY_SIZE(dev_attrs); i++)
-		device_remove_file(poe.pdev, &(dev_attrs[i]));
+		device_remove_file(poe->pdev, &(dev_attrs[i]));
 
-	for (i = 0; i < poe.nports; i++) {
-		if (poe.ports[i]) {
+	for (i = 0; i < poe->nports; i++) {
+		if (poe->ports[i]) {
 			for (j = 0; j < ARRAY_SIZE(port_attrs); j++)
-				device_remove_file(poe.ports[i],
+				device_remove_file(poe->ports[i],
 						   &(port_attrs[j]));
 		}
 	}
 }
 
-static int get_device_params(void)
+static int get_device_params(struct device *dev)
 {
-	poe.nports = -1;
-	poe.port_base = -1;
-	poe.max_power_mw = -1;
+	struct bcm_poe_dev *poe = dev_get_drvdata(dev);
+
+	poe->nports = -1;
+	poe->port_base = -1;
+	poe->max_power_mw = -1;
 
 #define PARG(_name, _dst) \
-	of_property_read_u32(poe.client->dev.of_node, _name, _dst)
-	if (PARG("ports", &(poe.nports)) || poe.nports < 0 ||
-	    poe.nports > POE_MAX_PORT)
+	of_property_read_u32(poe->client->dev.of_node, _name, _dst)
+	if (PARG("ports", &(poe->nports)) || poe->nports < 0 ||
+	    poe->nports > POE_MAX_PORT)
 		return -ENOPORT;
-	else if (PARG("port_base", &(poe.port_base)) || poe.port_base < 0)
+	else if (PARG("port_base", &(poe->port_base)) || poe->port_base < 0)
 		return -ENOBASE;
-	else if (PARG("max_power_mw", &(poe.max_power_mw)) ||
-		 poe.max_power_mw < 0)
+	else if (PARG("max_power_mw", &(poe->max_power_mw)) ||
+		 poe->max_power_mw < 0)
 		return -ENOPOWER;
 #undef PARG
 
@@ -547,73 +575,92 @@ static int get_device_params(void)
 
 static int bcm_poe_probe(struct i2c_client *cl)
 {
+	struct class *class;
+	struct device *dev;
+	struct bcm_poe_dev *poe;
 	int i, j, ret = 0;
 
-	poe.client = cl;
-	poe.class = class_create("poe");
+	class = class_create("poe");
 
-	if (!poe.class) {
+	if (IS_ERR(class)) {
 		ret = -ECLASS;
 		goto probe_failed;
 	}
 
-	poe.pdev = device_create(poe.class, NULL, 0, NULL, "poe0");
+	dev = device_create(class, NULL, 0, NULL, "poe0");
 
-	if (!poe.pdev) {
+	if (IS_ERR(dev)) {
 		ret = -EDEVICE;
 		goto probe_failed;
 	}
 
-	ret = get_device_params();
+	poe = devm_kzalloc(dev, sizeof(*poe), GFP_KERNEL);
+
+	if (!poe) {
+		ret = -ENOMEM;
+		goto probe_failed;
+	}
+
+	poe->class = class;
+	poe->client = cl;
+	poe->pdev = dev;
+
+	dev_set_drvdata(dev, poe);
+	i2c_set_clientdata(cl, poe);
+
+	ret = get_device_params(poe->pdev);
 	if (ret)
 		goto probe_failed;
 
-	if (bcm_fw_init(poe.pdev)) {
+	if (bcm_fw_init(poe->pdev)) {
 		ret = -EFW;
 		goto probe_failed;
 	}
 
-	poe.port_pdev =
-		device_create(poe.class, poe.pdev, 0, NULL, "sys_ports");
+	poe->port_pdev =
+		device_create(poe->class, poe->pdev, 0, NULL, "sys_ports");
 
-	if (!poe.port_pdev) {
+	if (IS_ERR(poe->port_pdev)) {
 		ret = -EDEVICE;
 		goto probe_failed;
 	}
 
+	dev_set_drvdata(poe->port_pdev, poe);
+
 	for (i = 0; i < ARRAY_SIZE(dev_attrs); i++) {
-		if (device_create_file(poe.pdev, &(dev_attrs[i]))) {
+		if (device_create_file(poe->pdev, &(dev_attrs[i]))) {
 			ret = -EDEVICEF;
 			goto probe_failed;
 		}
 	}
 
-	remove_sysfs_links(&(poe.pdev->kobj));
-	remove_sysfs_links(&(poe.port_pdev->kobj));
+	remove_sysfs_links(&(poe->pdev->kobj));
+	remove_sysfs_links(&(poe->port_pdev->kobj));
 
-	for (i = 0; i < poe.nports && !ret; i++) {
-		poe.ports[i] = device_create(poe.class, poe.port_pdev, i, NULL,
-					     "port%d", i + poe.port_base);
+	for (i = 0; i < poe->nports && !ret; i++) {
+		poe->ports[i] = device_create(poe->class, poe->port_pdev, i,
+					      NULL, "port%d",
+					      i + poe->port_base);
 
-		if (!poe.ports[i]) {
+		if (IS_ERR(poe->ports[i])) {
 			ret = -EPORT;
 		} else {
-			remove_sysfs_links(&(poe.ports[i]->kobj));
+			remove_sysfs_links(&(poe->ports[i]->kobj));
 
 			for (j = 0; j < ARRAY_SIZE(port_attrs) && !ret; j++) {
-				if (device_create_file(poe.ports[i],
+				if (device_create_file(poe->ports[i],
 						       &(port_attrs[j])))
 					ret = -EPORTF;
 			}
 
-			poe.last_joule_time[i] = jiffies;
+			poe->last_joule_time[i] = jiffies;
 		}
 	}
 
 probe_failed:
 	if (ret < 0) {
-		remove_device_files();
-		remove_sysfs_dirs();
+		remove_device_files(poe->pdev);
+		remove_sysfs_dirs(poe->pdev);
 	}
 
 	return ret;
@@ -621,8 +668,10 @@ probe_failed:
 
 static void bcm_poe_remove(struct i2c_client *client)
 {
-	remove_device_files();
-	remove_sysfs_dirs();
+	struct bcm_poe_dev *poe = i2c_get_clientdata(client);
+
+	remove_device_files(poe->pdev);
+	remove_sysfs_dirs(poe->pdev);
 }
 
 static int param_set_mode(const char *val, const struct kernel_param *kp)
@@ -630,8 +679,7 @@ static int param_set_mode(const char *val, const struct kernel_param *kp)
 	int ret =
 		param_set_uint_minmax(val, kp, OP_MODE_SHUTDOWN, OP_MODE_AUTO);
 	if (ret == 0)
-		BCM_WRITE(poe.client, POE_OP_MODE_REG,
-			  OP_MODES_SET_ALL[*((unsigned int *)kp->arg)]);
+		op_mode = OP_MODES_SET_ALL[*((unsigned int *)kp->arg)];
 	return ret;
 }
 
