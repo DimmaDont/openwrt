@@ -1,3 +1,8 @@
+// SPDX-License-Identifier: GPL
+/*
+ * Broadcom BCM59111 driver
+ */
+
 #include <linux/delay.h>
 #include <linux/device.h>
 #include <linux/firmware.h>
@@ -238,7 +243,7 @@ static u8 op_mode = OP_MODE_DEFAULT;
 								  "ERR")))
 #define POE_PRINT_BITS _POE_PRINT("%x\n", (rd < 0 ? -1 : idx))
 #define POE_PRINT_MATCH(_mval) \
-	_POE_PRINT("%d\n", (rd < 0 ? -1 : (_mval == idx)));
+	_POE_PRINT("%d\n", (rd < 0 ? -1 : (_mval == idx)))
 
 #define DEV_RD(_name, _reg, _regoff, _bits, _bitoff)                     \
 	POE_ATTR_RO_FUNC(_name, (_reg + (dev->devt * _regoff)), (_bits), \
@@ -310,23 +315,23 @@ enum fail {
 
 static const struct firmware *bcm_poe_fw;
 
-static ssize_t reg_store(struct device *cl, struct device_attribute *cl_attr,
+static ssize_t reg_store(struct device *dev, struct device_attribute *dev_attr,
 			 const char *buf, size_t count)
 {
 	long val;
-	struct bcm_poe_dev *poe = dev_get_drvdata(cl);
+	struct bcm_poe_dev *poe = dev_get_drvdata(dev);
 
 	if (!kstrtol(buf, 16, &val)) {
-		if (!strcmp(cl_attr->attr.name, "reg_arg"))
+		if (!strcmp(dev_attr->attr.name, "reg_arg"))
 			BCM_WRITE(poe->client, poe->reg_op, val);
-		else if (!strcmp(cl_attr->attr.name, "reg"))
+		else if (!strcmp(dev_attr->attr.name, "reg"))
 			poe->reg_op = val;
 	}
 
 	return count;
 }
 
-static ssize_t reg_show(struct device *dev, struct device_attribute *attr,
+static ssize_t reg_show(struct device *dev, struct device_attribute *dev_attr,
 			char *buf)
 {
 	struct bcm_poe_dev *poe = dev_get_drvdata(dev);
@@ -336,7 +341,7 @@ static ssize_t reg_show(struct device *dev, struct device_attribute *attr,
 }
 
 static ssize_t enabled_store(struct device *dev,
-			     struct device_attribute *cl_attr, const char *buf,
+			     struct device_attribute *dev_attr, const char *buf,
 			     size_t count)
 {
 	long val;
@@ -375,6 +380,7 @@ static ssize_t millijoules_show(struct device *dev,
 	struct bcm_poe_dev *poe = dev_get_drvdata(dev->parent);
 	s64 watts = calculate_port_power_usage(poe->client, dev->devt);
 	uint32_t t = (jiffies - poe->last_joule_time[dev->devt]);
+
 	poe->last_joule_time[dev->devt] = jiffies;
 	return scnprintf(buf, PAGE_SIZE, "%llu\n", watts * t);
 }
@@ -389,7 +395,7 @@ static ssize_t power_show(struct device *dev, struct device_attribute *dev_attr,
 }
 
 static ssize_t power_budget_show(struct device *dev,
-				 struct device_attribute *attr, char *buf)
+				 struct device_attribute *dev_attr, char *buf)
 {
 	struct bcm_poe_dev *poe = dev_get_drvdata(dev);
 
@@ -560,6 +566,7 @@ static int get_device_params(struct device *dev)
 
 #define PARG(_name, _dst) \
 	of_property_read_u32(poe->client->dev.of_node, _name, _dst)
+
 	if (PARG("ports", &(poe->nports)) || poe->nports < 0 ||
 	    poe->nports > POE_MAX_PORT)
 		return -ENOPORT;
@@ -573,7 +580,7 @@ static int get_device_params(struct device *dev)
 	return 0;
 }
 
-static int bcm_poe_probe(struct i2c_client *cl)
+static int bcm_poe_probe(struct i2c_client *client)
 {
 	struct class *class;
 	struct device *dev;
@@ -602,11 +609,11 @@ static int bcm_poe_probe(struct i2c_client *cl)
 	}
 
 	poe->class = class;
-	poe->client = cl;
+	poe->client = client;
 	poe->pdev = dev;
 
 	dev_set_drvdata(dev, poe);
-	i2c_set_clientdata(cl, poe);
+	i2c_set_clientdata(client, poe);
 
 	ret = get_device_params(poe->pdev);
 	if (ret)
@@ -697,7 +704,7 @@ static struct i2c_device_id bcm_poe_idtable[] = {
 	{ }
 };
 
-static struct of_device_id bcm_poe_of_idtable[] = {
+static const struct of_device_id bcm_poe_of_idtable[] = {
 	{ .compatible = "brcm,bcm59111" },
 	{ }
 };
@@ -711,21 +718,10 @@ static struct i2c_driver bcm_poe_driver = {
 
 	.id_table   = bcm_poe_idtable,
 	.probe      = bcm_poe_probe,
-	.remove = bcm_poe_remove,
+	.remove     = bcm_poe_remove,
 };
 
-static int __init bcm_poe_init(void)
-{
-	return i2c_add_driver(&bcm_poe_driver);
-}
-
-static void __exit bcm_poe_exit(void)
-{
-	i2c_del_driver(&bcm_poe_driver);
-}
-
-module_init(bcm_poe_init);
-module_exit(bcm_poe_exit);
+module_i2c_driver(bcm_poe_driver);
 MODULE_DEVICE_TABLE(i2c, bcm_poe_idtable);
 MODULE_DEVICE_TABLE(of, bcm_poe_of_idtable);
 
