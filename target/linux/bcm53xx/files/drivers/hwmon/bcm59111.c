@@ -225,7 +225,7 @@ static u8 op_mode = OP_MODE_DEFAULT;
 	static ssize_t _name##_show(struct _type *dev,                         \
 				    struct _type##_attribute *attr, char *buf) \
 	{                                                                      \
-		s32 rd = (_reg >= 0 ? bcm_read(_reg) : -1);                    \
+		s32 rd = (_reg >= 0 ? BCM_READ(poe.client, _reg) : -1);        \
 		int idx = ((rd >> _bitoff) & _bits);                           \
 		return _pstr;                                                  \
 	}
@@ -255,6 +255,12 @@ static u8 op_mode = OP_MODE_DEFAULT;
 #define DEV_STR_RD(_name, _reg, _regoff, _bits, _bitoff)                 \
 	POE_ATTR_RO_FUNC(_name, (_reg + (dev->devt * _regoff)), (_bits), \
 			 (_bitoff), POE_PRINT_STR(_name), device)
+
+#define BCM_WRITE_BLOCK(cl, addr, len, val) \
+	i2c_smbus_write_block_data(cl, addr, len, val)
+#define BCM_READ_WORD(cl, addr) i2c_smbus_read_word_data(cl, addr)
+#define BCM_READ(cl, addr) i2c_smbus_read_byte_data(cl, addr)
+#define BCM_WRITE(cl, addr, val) i2c_smbus_write_byte_data(cl, addr, val)
 
 struct bcm_poe_dev {
 	struct device *ports[POE_MAX_PORT];
@@ -290,26 +296,6 @@ enum fail {
 
 static const struct firmware *bcm_poe_fw;
 
-static s32 bcm_write_block(u32 addr, u32 len, u8 *val)
-{
-	return i2c_smbus_write_block_data(poe.client, addr, len, val);
-}
-
-static s32 bcm_read_word(u32 addr)
-{
-	return i2c_smbus_read_word_data(poe.client, addr);
-}
-
-static s32 bcm_read(u32 addr)
-{
-	return i2c_smbus_read_byte_data(poe.client, addr);
-}
-
-static s32 bcm_write(u32 addr, u8 val)
-{
-	return i2c_smbus_write_byte_data(poe.client, addr, val);
-}
-
 static ssize_t reg_store(struct device *cl, struct device_attribute *cl_attr,
 			 const char *buf, size_t count)
 {
@@ -317,7 +303,7 @@ static ssize_t reg_store(struct device *cl, struct device_attribute *cl_attr,
 
 	if (!kstrtol(buf, 16, &val)) {
 		if (!strcmp(cl_attr->attr.name, "reg_arg"))
-			bcm_write(poe.reg_op, val);
+			BCM_WRITE(poe.client, poe.reg_op, val);
 		else if (!strcmp(cl_attr->attr.name, "reg"))
 			poe.reg_op = val;
 	}
@@ -329,7 +315,7 @@ static ssize_t reg_show(struct device *dev, struct device_attribute *attr,
 			char *buf)
 {
 	return scnprintf(buf, PAGE_SIZE, "Register 0x%lx Value 0x%x\n",
-			 poe.reg_op, bcm_read(poe.reg_op));
+			 poe.reg_op, BCM_READ(poe.client, poe.reg_op));
 }
 
 static ssize_t enabled_store(struct device *dev,
@@ -340,10 +326,10 @@ static ssize_t enabled_store(struct device *dev,
 	s32 rd;
 
 	if (!kstrtol(buf, 16, &val)) {
-		rd = bcm_read(POE_OP_MODE_REG);
+		rd = BCM_READ(poe.client, POE_OP_MODE_REG);
 		rd = OP_MODE_CLR_SET(
 			rd, (val ? OP_MODE_AUTO : OP_MODE_SHUTDOWN), dev->devt);
-		bcm_write(POE_OP_MODE_REG, rd);
+		BCM_WRITE(poe.client, POE_OP_MODE_REG, rd);
 	}
 
 	return count;
@@ -354,8 +340,8 @@ static u64 calculate_port_power_usage(int port)
 	u32 volt, amp;
 	u64 ret;
 
-	volt = bcm_read_word(POE_PARAM_VOLT_REG(port));
-	amp = bcm_read_word(POE_PARAM_AMP_REG(port));
+	volt = BCM_READ_WORD(poe.client, POE_PARAM_VOLT_REG(port));
+	amp = BCM_READ_WORD(poe.client, POE_PARAM_AMP_REG(port));
 
 	if (volt < 0 || amp < 0)
 		ret = -EREAD;
@@ -407,10 +393,10 @@ static int bcm_fw_init(struct device *dev)
 	u8 block[I2C_BLOCK_SIZE];
 	unsigned long start;
 
-	if (bcm_read(POE_FW_CRC_REG) == POE_FW_CRC_GOOD)
+	if (BCM_READ(poe.client, POE_FW_CRC_REG) == POE_FW_CRC_GOOD)
 		goto fw_loaded;
 
-	fail = bcm_write(POE_FW_LOAD_CTL_REG, POE_FW_LOAD_START);
+	fail = BCM_WRITE(poe.client, POE_FW_LOAD_CTL_REG, POE_FW_LOAD_START);
 
 	if (fail < 0)
 		goto init_fail;
@@ -426,36 +412,40 @@ static int bcm_fw_init(struct device *dev)
 		for (j = 0; (j < FW_BLOCK_SIZE) && (i + j) < bcm_poe_fw->size;
 		     j++)
 			block[j + 2] = bcm_poe_fw->data[i + j];
-		fail = bcm_write_block(POE_FW_LOAD_CTL_REG, (j + 2), block);
+		fail = BCM_WRITE_BLOCK(poe.client, POE_FW_LOAD_CTL_REG, (j + 2),
+				       block);
 	}
 
 	if (fail < 0)
 		goto init_fail;
 
-	fail = bcm_write(POE_FW_LOAD_CTL_REG, POE_FW_LOAD_STOP);
+	fail = BCM_WRITE(poe.client, POE_FW_LOAD_CTL_REG, POE_FW_LOAD_STOP);
 
 	if (fail < 0)
 		goto init_fail;
 
 	start = ktime_get_real_seconds();
-	while (bcm_read(POE_FW_CRC_REG) != POE_FW_CRC_GOOD &&
+	while (BCM_READ(poe.client, POE_FW_CRC_REG) != POE_FW_CRC_GOOD &&
 	       ktime_get_real_seconds() - start < POE_FW_CRC_MAX_TIME) {
 		msleep(100);
 	};
 
-	if (bcm_read(POE_FW_CRC_REG) != POE_FW_CRC_GOOD) {
+	if (BCM_READ(poe.client, POE_FW_CRC_REG) != POE_FW_CRC_GOOD) {
 		fail = -ECRC;
 		goto init_fail;
 	}
 
 fw_loaded:
 	//Enable disconnect sensing
-	bcm_write(POE_DISC_SENSE_REG, DISC_ENABLE_DC(POE_ALL_PORTS));
+	BCM_WRITE(poe.client, POE_DISC_SENSE_REG,
+		  DISC_ENABLE_DC(POE_ALL_PORTS));
 	//Classify/detect on ports 0/1/2/3 (only used are 0/1)
-	bcm_write(POE_DET_CLASS_REG, DET_CLASS_ENABLE(POE_ALL_PORTS));
+	BCM_WRITE(poe.client, POE_DET_CLASS_REG,
+		  DET_CLASS_ENABLE(POE_ALL_PORTS));
 
 	if (op_mode == OP_MODE_DEFAULT)
-		bcm_write(POE_OP_MODE_REG, OP_MODE_SET_ALL(OP_MODE_DEFAULT));
+		BCM_WRITE(poe.client, POE_OP_MODE_REG,
+			  OP_MODE_SET_ALL(OP_MODE_DEFAULT));
 
 init_fail:
 	release_firmware(bcm_poe_fw);
@@ -640,7 +630,7 @@ static int param_set_mode(const char *val, const struct kernel_param *kp)
 	int ret =
 		param_set_uint_minmax(val, kp, OP_MODE_SHUTDOWN, OP_MODE_AUTO);
 	if (ret == 0)
-		bcm_write(POE_OP_MODE_REG,
+		BCM_WRITE(poe.client, POE_OP_MODE_REG,
 			  OP_MODES_SET_ALL[*((unsigned int *)kp->arg)]);
 	return ret;
 }
