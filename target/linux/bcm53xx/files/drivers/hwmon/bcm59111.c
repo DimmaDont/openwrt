@@ -155,6 +155,8 @@ static u8 op_mode = OP_MODE_DEFAULT;
 	(((_vreg * POE_STEP_VOLTAGE) / 1000) * \
 	 ((_creg * POE_STEP_CURRENT) / 1000) / \
 	 (1000)) //uA * uV = 1 trillionth of a Watt
+#define POE_POWER2(_vreg, _creg) (_vreg * _creg * 7123ul / 10000000)
+// round(5835 * 122.07 / 100) == 7123
 
 /* PoE High Power Features registers */
 #define POE_HP_ENABLE_REG     0x44 //RW
@@ -371,7 +373,7 @@ static u64 calculate_port_power_usage(const struct i2c_client *client, int port)
 	else
 		ret = POE_POWER(volt, amp);
 
-	pr_info("volt %u amp %u power %llu\n", volt, amp, ret);
+	pr_info("volt %u amp %u power %llu %lu\n", volt, amp, ret, POE_POWER2(volt, amp));
 
 	return ret;
 }
