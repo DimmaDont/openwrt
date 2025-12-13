@@ -150,13 +150,13 @@ static u8 op_mode = OP_MODE_DEFAULT;
 #define POE_PARAM_VOLT_REG(port)  (POE_PARAM_REG(POE_PARAM_VOLT_BASE_REG, port))
 #define POE_PARAM_AMP_REG(port)   (POE_PARAM_REG(POE_PARAM_AMP_BASE_REG, port))
 #define POE_STEP_VOLTAGE 5835 //(uV)
-#define POE_STEP_CURRENT 122 //(uA) technically 122.07
+#define POE_STEP_CURRENT 12207 //(mA)
+#define POE_VOLTAGE(_vreg) (_vreg * POE_STEP_VOLTAGE)
+#define POE_CURRENT(_creg) (_creg * POE_STEP_CURRENT / 1000)
 #define POE_POWER(_vreg, _creg)                \
-	(((_vreg * POE_STEP_VOLTAGE) / 1000) * \
-	 ((_creg * POE_STEP_CURRENT) / 1000) / \
+	((POE_VOLTAGE(_vreg) / 1000) * \
+	 (POE_CURRENT(_creg) / 1000) / \
 	 (1000)) //uA * uV = 1 trillionth of a Watt
-#define POE_POWER2(_vreg, _creg) (_vreg * _creg * 7123ul / 10000000)
-// round(5835 * 122.07 / 100) == 7123
 
 /* PoE High Power Features registers */
 #define POE_HP_ENABLE_REG     0x44 //RW
@@ -362,7 +362,7 @@ static ssize_t enabled_store(struct device *dev,
 
 static u64 calculate_port_power_usage(const struct i2c_client *client, int port)
 {
-	u32 volt, amp;
+	s32 volt, amp;
 	u64 ret;
 
 	volt = BCM_READ_WORD(client, POE_PARAM_VOLT_REG(port));
@@ -372,8 +372,6 @@ static u64 calculate_port_power_usage(const struct i2c_client *client, int port)
 		ret = -EREAD;
 	else
 		ret = POE_POWER(volt, amp);
-
-	pr_info("volt %u amp %u power %llu %lu\n", volt, amp, ret, POE_POWER2(volt, amp));
 
 	return ret;
 }
@@ -387,6 +385,26 @@ static ssize_t millijoules_show(struct device *dev,
 
 	poe->last_joule_time[dev->devt] = jiffies;
 	return scnprintf(buf, PAGE_SIZE, "%llu\n", watts * t);
+}
+
+static ssize_t volts_show(struct device *dev,
+				struct device_attribute *dev_attr, char *buf)
+{
+	struct bcm_poe_dev *poe = dev_get_drvdata(dev->parent);
+	s32 volts = BCM_READ_WORD(poe->client, POE_PARAM_VOLT_REG(dev->devt));
+	if (volts < 0)
+		return scnprintf(buf, PAGE_SIZE, "%d", volts);
+	return scnprintf(buf, PAGE_SIZE, "%d\n", POE_VOLTAGE(volts));
+}
+
+static ssize_t amps_show(struct device *dev,
+				struct device_attribute *dev_attr, char *buf)
+{
+	struct bcm_poe_dev *poe = dev_get_drvdata(dev->parent);
+	s32 amps = BCM_READ_WORD(poe->client, POE_PARAM_AMP_REG(dev->devt));
+	if (amps < 0)
+		return scnprintf(buf, PAGE_SIZE, "%d", amps);
+	return scnprintf(buf, PAGE_SIZE, "%d\n", POE_CURRENT(amps));
 }
 
 static ssize_t power_show(struct device *dev, struct device_attribute *dev_attr,
@@ -544,6 +562,8 @@ static struct device_attribute port_attrs[] = {
 	POE_ATTR_RO_AUTO(mode),
 	POE_ATTR_RO_AUTO(overload),
 	POE_ATTR_RO_AUTO(power),
+	POE_ATTR_RO_AUTO(volts),
+	POE_ATTR_RO_AUTO(amps),
 	POE_ATTR_RW_AUTO(enabled),
 	POE_ATTR_RO_AUTO(status),
 	POE_ATTR_RO_AUTO(underload),
