@@ -281,22 +281,22 @@ static u8 op_mode = OP_MODE_DEFAULT;
 
 #define BCM_WRITE_BLOCK(cl, addr, len, val) \
 	i2c_smbus_write_block_data(cl, addr, len, val)
-#define BCM_READ_WORD(cl, addr) i2c_smbus_read_word_data(cl, addr)
-#define BCM_READ(cl, addr) i2c_smbus_read_byte_data(cl, addr)
+#define BCM_READ_WORD(cl, addr) i2c_smbus_read_word_data(cl, (u8)addr)
+#define BCM_READ(cl, addr) i2c_smbus_read_byte_data(cl, (u8)addr)
 #define BCM_WRITE(cl, addr, val) i2c_smbus_write_byte_data(cl, addr, val)
 
 struct bcm_poe_dev {
 	struct device *ports[POE_MAX_PORT];
-	uint32_t last_joule_time[POE_MAX_PORT];
+	unsigned long last_joule_time[POE_MAX_PORT];
 	const struct i2c_client *client;
 	struct class *class;
 	struct device *pdev;
 	struct device *port_pdev;
-	long reg_op;
+	u8 reg_op;
 	long reg_arg;
-	uint32_t nports;
-	uint32_t port_base;
-	uint32_t max_power_mw;
+	u32 nports;
+	u32 port_base;
+	u32 max_power_mw;
 };
 
 enum fail {
@@ -320,17 +320,17 @@ static const struct firmware *bcm_poe_fw;
 static ssize_t reg_store(struct device *dev, struct device_attribute *dev_attr,
 			 const char *buf, size_t count)
 {
-	long val;
+	unsigned int val;
 	struct bcm_poe_dev *poe = dev_get_drvdata(dev);
 
-	if (!kstrtol(buf, 16, &val)) {
+	if (!kstrtouint(buf, 16, &val)) {
 		if (!strcmp(dev_attr->attr.name, "reg_arg"))
-			BCM_WRITE(poe->client, poe->reg_op, val);
+			BCM_WRITE(poe->client, poe->reg_op, (u8)val);
 		else if (!strcmp(dev_attr->attr.name, "reg"))
-			poe->reg_op = val;
+			poe->reg_op = (u8)val;
 	}
 
-	return count;
+	return (ssize_t)count;
 }
 
 static ssize_t reg_show(struct device *dev, struct device_attribute *dev_attr,
@@ -338,7 +338,7 @@ static ssize_t reg_show(struct device *dev, struct device_attribute *dev_attr,
 {
 	struct bcm_poe_dev *poe = dev_get_drvdata(dev);
 
-	return scnprintf(buf, PAGE_SIZE, "Register 0x%lx Value 0x%x\n",
+	return scnprintf(buf, PAGE_SIZE, "Register %#x Value %#x\n",
 			 poe->reg_op, BCM_READ(poe->client, poe->reg_op));
 }
 
@@ -346,24 +346,27 @@ static ssize_t enabled_store(struct device *dev,
 			     struct device_attribute *dev_attr, const char *buf,
 			     size_t count)
 {
-	long val;
+	unsigned int val;
 	s32 rd;
 	struct bcm_poe_dev *poe = dev_get_drvdata(dev->parent);
 
-	if (!kstrtol(buf, 16, &val)) {
+	if (!kstrtouint(buf, 16, &val)) {
 		rd = BCM_READ(poe->client, POE_OP_MODE_REG);
+		if (rd < 0)
+			return -EREAD;
 		rd = OP_MODE_CLR_SET(
 			rd, (val ? OP_MODE_AUTO : OP_MODE_SHUTDOWN), dev->devt);
-		BCM_WRITE(poe->client, POE_OP_MODE_REG, rd);
+		BCM_WRITE(poe->client, POE_OP_MODE_REG, (u8)rd);
 	}
 
-	return count;
+	return (ssize_t)count;
 }
 
-static u64 calculate_port_power_usage(const struct i2c_client *client, int port)
+static s64 calculate_port_power_usage(const struct i2c_client *client,
+				      dev_t port)
 {
 	s32 volt, amp;
-	u64 ret;
+	s64 ret;
 
 	volt = BCM_READ_WORD(client, POE_PARAM_VOLT_REG(port));
 	amp = BCM_READ_WORD(client, POE_PARAM_AMP_REG(port));
@@ -381,10 +384,12 @@ static ssize_t millijoules_show(struct device *dev,
 {
 	struct bcm_poe_dev *poe = dev_get_drvdata(dev->parent);
 	s64 watts = calculate_port_power_usage(poe->client, dev->devt);
-	uint32_t t = (jiffies - poe->last_joule_time[dev->devt]);
+	unsigned long t = (jiffies - poe->last_joule_time[dev->devt]);
 
+	if (watts < 0)
+		return scnprintf(buf, PAGE_SIZE, "%lld\n", watts);
 	poe->last_joule_time[dev->devt] = jiffies;
-	return scnprintf(buf, PAGE_SIZE, "%llu\n", watts * t);
+	return scnprintf(buf, PAGE_SIZE, "%llu\n", (u64)watts * t);
 }
 
 static ssize_t volts_show(struct device *dev, struct device_attribute *dev_attr,
@@ -444,9 +449,10 @@ static void remove_sysfs_dirs(struct device *dev)
 static int bcm_fw_init(struct device *dev)
 {
 	int fail = 0;
-	u32 i, j;
+	u32 i;
+	u8 j;
 	u8 block[I2C_BLOCK_SIZE];
-	unsigned long start;
+	time64_t start;
 	struct bcm_poe_dev *poe = dev_get_drvdata(dev);
 
 	if (BCM_READ(poe->client, POE_FW_CRC_REG) == POE_FW_CRC_GOOD)
@@ -586,20 +592,18 @@ static int get_device_params(struct device *dev)
 {
 	struct bcm_poe_dev *poe = dev_get_drvdata(dev);
 
-	poe->nports = -1;
-	poe->port_base = -1;
-	poe->max_power_mw = -1;
+	poe->nports = 0;
+	poe->port_base = 0;
+	poe->max_power_mw = 0;
 
 #define PARG(_name, _dst) \
 	of_property_read_u32(poe->client->dev.of_node, _name, _dst)
 
-	if (PARG("ports", &(poe->nports)) || poe->nports < 0 ||
-	    poe->nports > POE_MAX_PORT)
+	if (PARG("ports", &(poe->nports)) || poe->nports > POE_MAX_PORT)
 		return -ENOPORT;
-	else if (PARG("port_base", &(poe->port_base)) || poe->port_base < 0)
+	else if (PARG("port_base", &(poe->port_base)))
 		return -ENOBASE;
-	else if (PARG("max_power_mw", &(poe->max_power_mw)) ||
-		 poe->max_power_mw < 0)
+	else if (PARG("max_power_mw", &(poe->max_power_mw)))
 		return -ENOPOWER;
 #undef PARG
 
@@ -611,7 +615,8 @@ static int bcm_poe_probe(struct i2c_client *client)
 	struct class *class;
 	struct device *dev;
 	struct bcm_poe_dev *poe;
-	int i, j, ret = 0;
+	uint i, j;
+	int ret = 0;
 
 	class = class_create("poe");
 
